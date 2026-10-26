@@ -34,14 +34,17 @@ class PatchTSTKernelEmbedding(nn.Module):
         #     f" + {config.patch_length} != {config.d_model}"
         # )
         self.num_poly_feats = config.num_poly_feats
-        self.patch_indices = [
-            torch.randint(
-                high=config.patch_length,
-                size=(self.num_poly_feats, d),
-                requires_grad=False,
-            )
-            for d in poly_degrees_lst
-        ]
+        # Persist the feature map together with the weights that use it.
+        # Legacy checkpoints cannot recover their original map; use a fixed
+        # fallback independent of global RNG state when loading those weights.
+        generator = torch.Generator().manual_seed(getattr(config, "polynomial_indices_seed", 0))
+        self._patch_index_names = []
+        for degree in poly_degrees_lst:
+            name = f"patch_indices_{degree}"
+            self.register_buffer(name, torch.randint(
+                high=config.patch_length, size=(self.num_poly_feats, degree), generator=generator,
+            ))
+            self._patch_index_names.append(name)
         self.freq_weights = nn.Parameter(
             config.rff_scale * torch.randn(config.patch_length, config.num_rff // 2),
             requires_grad=config.rff_trainable,
@@ -68,6 +71,11 @@ class PatchTSTKernelEmbedding(nn.Module):
         #     config.d_model,
         #     bias=False,
         # )
+
+    @property
+    def patch_indices(self) -> list[torch.Tensor]:
+        """Return persisted polynomial indices on the module's current device."""
+        return [getattr(self, name) for name in self._patch_index_names]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
